@@ -15,6 +15,7 @@
 #include "shm_buffer.h"
 #include "lock_helper.h"
 #include "shm_def.h"
+#include "shm_pool.h"
 
 #define LRU_KEY_SIZE 256
 #define LRU_MAGIC	0xABCD1234
@@ -23,7 +24,8 @@ static char *shm_buf;
 static int flock_fd = -1;
 
 struct lru_node {
-	char key[LRU_KEY_SIZE];
+	//char key[LRU_KEY_SIZE];
+	struct shmp_buffer key;
 	int64_t value;
 	STAILQ_ENTRY(lru_node) lru;
 	STAILQ_ENTRY(lru_node) hash;
@@ -66,7 +68,7 @@ static struct lru_node* find_node(lrucache_t* ctx, char* key)
 	const int idx = hash_str(key) % ctx->buckets;
 
 	STAILQ_FOREACH(n, &ctx->hash_list[idx], lru_array, hash) {
-		if (strcmp(lru_array[n].key, key) == 0) {
+		if (strcmp(shmp_buffer_addr(&(lru_array[n].key)), key) == 0) {
 			return &(lru_array[n]);
 		}
 	}
@@ -99,10 +101,12 @@ get_new_node_and_insert(lrucache_t *ctx, char* key, int64_t value)
 {
 	struct lru_node* n = get_one_lru_node(&(ctx->lru_list));
 
-	if (n->key[0] != '\0') {
-		hash_list_remove(ctx, n->key, n);
+	if ( shmp_buffer_is_valid(&(n->key)) /* n->key[0] != '\0' */) {
+		hash_list_remove(ctx, shmp_buffer_addr(&(n->key)), n);
+		shmp_put_buffer(&(n->key));
 	}
-	strncpy(n->key, key, sizeof(n->key));
+	shmp_get_buffer(strlen(key)+1, &(n->key));
+	strcpy(shmp_buffer_addr(&(n->key)), key);
 	n->value = value;
 	hash_list_insert(ctx, key, n);
 	return n;
@@ -123,7 +127,9 @@ int shm_lrucache_init(int elem_nums)
 	if (shm_buf == NULL) {
 		const int bufsize = calculate_bufsize(elem_nums, buckets);
 		printf("try to malloc buffer of %d bytes\n", bufsize);
-		shm_buf = shm_lru_get_buffer(shm_buf, bufsize);
+		shm_buf = shm_lru_get_buffer(MMAP_FILE_PATH, bufsize);
+
+		shmp_pool_init();
 	}
 	lrucache_t *ctx = (lrucache_t*)shm_buf;
 
@@ -151,7 +157,6 @@ int shm_lrucache_init(int elem_nums)
 				STAILQ_INIT(&ctx->hash_list[i]);
 			}
 			for (int i = 0; i < ctx->size; i++) {
-				lru_array[i].key[0] = '\0';
 				lru_array[i].lru.self_idx = i;
 				lru_array[i].hash.self_idx = i;
 				STAILQ_INSERT_TAIL(&ctx->lru_list, lru_array, &lru_array[i], lru);
@@ -184,29 +189,27 @@ int shm_lrucache_set(char* key, int64_t value)
 	}
 }
 
-int64_t shm_lrucache_get(char* key)
+int shm_lrucache_get(char* key, int64_t* value)
 {
 	lrucache_t *ctx = (lrucache_t*)shm_buf;
 
-	int64_t value = 0;
+	int ret = -1;
 	if (try_lock()) {
 		struct lru_node * n = find_node(ctx, key);
 		if (n) {
-			value = n->value;
+			*value = n->value;
+			ret = 0;
 		}
 		unlock();
 	} else {
 		printf("try_lock error!\n");
 	}
-
-	return value;
+	return ret;
 }
 
-int64_t shm_lruache_incr_by(char* key, int64_t value)
+int shm_lrucache_incr_by(char* key, int64_t value, int64_t* new_value)
 {
 	lrucache_t *ctx = (lrucache_t*)shm_buf;
-
-	int64_t new_value = 0;
 
 	if (try_lock()) {
 		struct lru_node * n = find_node(ctx, key);
@@ -215,16 +218,17 @@ int64_t shm_lruache_incr_by(char* key, int64_t value)
 		} else {
 			n = get_new_node_and_insert(ctx, key, value);
 		}
-		new_value = n->value;
+		*new_value = n->value;
 		unlock();
-	}
-	return new_value;
+        return 0;
+    } else {
+		printf("try_lock error!\n");
+        return -1;
+    }
 }
 
-int64_t shm_lruache_incr(char* key)
+int shm_lrucache_incr(char* key, int64_t * new_value)
 {
-	return shm_lruache_incr_by(key, 1);
+	return shm_lrucache_incr_by(key, 1, new_value);
 }
-
-
 
