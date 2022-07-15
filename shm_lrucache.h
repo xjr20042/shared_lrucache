@@ -2,6 +2,9 @@
 #define FE2A809C_1DEA_44DC_A93E_307600E5CD8F
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*
 	多进程共享的LRU key-value 缓存
 
@@ -44,5 +47,9 @@ int shm_lrucache_incr(char* key, int64_t* new_value);
 	return 0 表示成功, -1 失败
 */
 int shm_lrucache_incr_by(char* key, int64_t value, int64_t *new_value);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* FE2A809C_1DEA_44DC_A93E_307600E5CD8F */
